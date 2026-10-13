@@ -1,0 +1,177 @@
+package com.yourname.droplights;
+
+import com.google.inject.Provides;
+import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.ChatMessageType;
+import net.runelite.api.Client;
+import net.runelite.api.events.ChatMessage;
+import net.runelite.client.chat.ChatMessageManager;
+import net.runelite.client.chat.QueuedMessage;
+import net.runelite.client.config.ConfigManager;
+import net.runelite.client.eventbus.Subscribe;
+import net.runelite.client.game.ItemManager;
+import net.runelite.client.plugins.Plugin;
+import net.runelite.client.plugins.PluginDescriptor;
+import net.runelite.client.plugins.loottracker.LootReceived;
+import net.runelite.http.api.loottracker.LootRecordType;
+
+import javax.inject.Inject;
+import java.awt.Color;
+
+@Slf4j
+@PluginDescriptor(
+	name = "Drop Lights",
+	description = "Flashes Philips Hue lights when you get valuable drops",
+	tags = {"drop", "loot", "hue", "lights", "notification"}
+)
+public class DropLightsPlugin extends Plugin
+{
+	@Inject
+	private Client client;
+
+	@Inject
+	private DropLightsConfig config;
+
+	@Inject
+	private ItemManager itemManager;
+
+	@Inject
+	private HueController hueController;
+
+	@Inject
+	private ChatMessageManager chatMessageManager;
+
+	@Override
+	protected void startUp()
+	{
+		log.info("Drop Lights started");
+	}
+
+	@Override
+	protected void shutDown()
+	{
+		hueController.shutdown();
+		log.info("Drop Lights stopped");
+	}
+
+	@Subscribe
+	public void onLootReceived(LootReceived event)
+	{
+		if (!config.enabled())
+		{
+			return;
+		}
+
+		// Skip PvP loot
+		if (event.getType() == LootRecordType.PLAYER)
+		{
+			return;
+		}
+
+		long totalValue = 0;
+		for (var item : event.getItems())
+		{
+			int price = itemManager.getItemPrice(item.getId());
+			totalValue += (long) price * item.getQuantity();
+		}
+
+		Color color = getColorForValue(totalValue);
+		if (color != null)
+		{
+			log.info("Drop value {} → flashing {}", totalValue, color);
+			hueController.flashColor(color);
+		}
+	}
+
+	@Subscribe
+	public void onChatMessage(ChatMessage event)
+	{
+		// Only react to messages the local player typed
+		if (event.getName() == null || client.getLocalPlayer() == null)
+		{
+			return;
+		}
+
+		String localName = client.getLocalPlayer().getName();
+		if (localName == null || !event.getName().equals(localName))
+		{
+			return;
+		}
+
+		String message = event.getMessage().trim().toLowerCase();
+
+		if (message.equals("::testlights") || message.startsWith("::testlights "))
+		{
+			handleTestCommand(message);
+		}
+	}
+
+	private void handleTestCommand(String message)
+	{
+		Color color;
+		String tierName;
+
+		if (message.contains("insane"))
+		{
+			color = config.insaneColor();
+			tierName = "Insane";
+		}
+		else if (message.contains("high"))
+		{
+			color = config.highColor();
+			tierName = "High";
+		}
+		else if (message.contains("medium") || message.contains("med"))
+		{
+			color = config.mediumColor();
+			tierName = "Medium";
+		}
+		else if (message.contains("low"))
+		{
+			color = config.lowColor();
+			tierName = "Low";
+		}
+		else
+		{
+			// Default: flash Medium color
+			color = config.mediumColor();
+			tierName = "Medium (default)";
+		}
+
+		hueController.flashColor(color);
+
+		chatMessageManager.queue(QueuedMessage.builder()
+			.type(ChatMessageType.GAMEMESSAGE)
+			.runeLiteFormattedMessage("<col=00FF00>Drop Lights:</col> Testing <col=" + 
+				String.format("%06X", color.getRGB() & 0xFFFFFF) + ">" + tierName + 
+				"</col> flash for " + config.flashDuration() + " seconds")
+			.build());
+	}
+
+	private Color getColorForValue(long value)
+	{
+		if (value >= config.insaneValue())
+		{
+			return config.insaneColor();
+		}
+		if (value >= config.highValue())
+		{
+			return config.highColor();
+		}
+		if (value >= config.mediumValue())
+		{
+			return config.mediumColor();
+		}
+		if (value >= config.lowValue())
+		{
+			return config.lowColor();
+		}
+		return null;
+	}
+
+	@Provides
+	DropLightsConfig provideConfig(ConfigManager configManager)
+	{
+		return configManager.getConfig(DropLightsConfig.class);
+	}
+}
